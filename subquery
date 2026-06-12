@@ -1,0 +1,245 @@
+-- ============================================================
+-- GREENWEEZ SALES OPERATIONS ANALYSIS
+-- Author: Bahadır Köksal
+-- Tool: Google BigQuery
+-- Period: 2021
+-- Description: Operational profitability analysis for Greenweez
+--              combining revenue, margin, shipping, ad spend,
+--              and promotion breakdown
+-- ============================================================
+
+
+-- ============================================================
+-- STEP 1: DATA EXPLORATION
+-- ============================================================
+
+-- View raw sales data
+SELECT *
+FROM course17.gwz_sales_17;
+
+-- View shipping data
+SELECT *
+FROM course17.gwz_ship_17;
+
+-- View campaign / ad spend data
+SELECT *
+FROM course17.gwz_campaign_17;
+
+
+-- ============================================================
+-- STEP 2: ORDER-LEVEL AGGREGATION
+-- ============================================================
+
+-- Raw data has one row per product per order.
+-- Aggregate to one row per order by summing turnover and margin.
+CREATE OR REPLACE TABLE course17.gwz_orders AS
+SELECT
+  date_date,
+  orders_id,
+  ROUND(SUM(turnover), 2)                    AS turnover,
+  ROUND(SUM(turnover - purchase_cost), 2)    AS margin
+FROM course17.gwz_sales_17
+GROUP BY
+  date_date,
+  orders_id;
+
+
+-- ============================================================
+-- STEP 3: ADD SHIPPING COSTS (JOIN approach)
+-- ============================================================
+
+-- Join orders with the shipping table to add logistics costs per order.
+-- LEFT JOIN is used to retain orders that have no shipping record.
+-- operational_cost = log_cost + ship_cost
+CREATE OR REPLACE TABLE course17.gwz_orders_operational AS
+SELECT
+  o.date_date,
+  o.orders_id,
+  o.turnover,
+  o.margin,
+  sh.shipping_fee,
+  sh.log_cost + sh.ship_cost AS operational_cost
+FROM course17.gwz_orders AS o
+LEFT JOIN course17.gwz_ship_17 AS sh
+  ON o.orders_id = sh.orders_id;
+
+
+-- ============================================================
+-- STEP 4: ADD SHIPPING COSTS (CTE approach — cleaner version)
+-- ============================================================
+
+-- Same logic as Step 3 but using a CTE instead of a pre-built table.
+-- This avoids creating an intermediate table and improves readability.
+CREATE OR REPLACE TABLE course17.gwz_orders_join AS
+WITH orders_join AS (
+  SELECT
+    date_date,
+    orders_id,
+    ROUND(SUM(turnover), 2)                  AS turnover,
+    ROUND(SUM(turnover - purchase_cost), 2)  AS margin
+  FROM course17.gwz_sales_17
+  GROUP BY
+    date_date,
+    orders_id
+)
+SELECT
+  o.date_date,
+  o.orders_id,
+  o.turnover,
+  o.margin,
+  sh.shipping_fee,
+  sh.log_cost + sh.ship_cost AS operational_cost
+FROM orders_join AS o
+LEFT JOIN course17.gwz_ship_17 AS sh
+  ON o.orders_id = sh.orders_id;
+
+-- Quick validation: each order now shows turnover, margin,
+-- shipping_fee, and operational_cost — the full order economics view.
+SELECT *
+FROM course17.gwz_orders_join
+LIMIT 10;
+
+
+-- ============================================================
+-- STEP 5: ADD AD SPEND — DAILY P&L VIEW
+-- ============================================================
+
+-- Aggregate both orders and campaign data by date using two separate CTEs,
+-- then join them on date_date to produce a daily profit & loss view.
+-- LEFT JOIN ensures days with no ad spend are still included.
+CREATE OR REPLACE TABLE course17.gwz_campaign_join AS
+WITH orders_date AS (
+  SELECT
+    date_date,
+    SUM(turnover)           AS turnover,
+    SUM(margin)             AS margin,
+    SUM(shipping_fee)       AS shipping_fee,
+    SUM(operational_cost)   AS operational_cost
+  FROM course17.gwz_orders_join
+  GROUP BY date_date
+),
+
+campaign_date AS (
+  SELECT
+    date_date,
+    SUM(ads_cost) AS ads_cost
+  FROM course17.gwz_campaign_17
+  GROUP BY date_date
+)
+
+SELECT
+  o.date_date,
+  o.turnover,
+  o.margin,
+  o.shipping_fee,
+  o.operational_cost,
+  c.ads_cost
+  -- True daily profitability:
+  -- margin + shipping_fee - operational_cost - ads_cost
+FROM orders_date AS o
+LEFT JOIN campaign_date AS c
+  USING (date_date)
+ORDER BY o.date_date DESC;
+
+
+-- ============================================================
+-- STEP 6: MARGIN ANALYSIS
+-- ============================================================
+
+-- Calculate margin percentage per product line and classify into levels.
+-- Uses chained CTEs: Step 1 calculates margin, Step 2 calculates
+-- margin_percent, Step 3 assigns the margin_level category.
+--
+-- SAFE_DIVIDE: BigQuery-specific function that returns NULL instead of
+-- throwing an error when the denominator is zero.
+-- Standard SQL equivalent: margin / NULLIF(turnover, 0)
+WITH margin_table AS (
+  SELECT
+    orders_id,
+    products_id,
+    turnover,
+    turnover - purchase_cost AS margin
+  FROM course17.gwz_sales_17
+),
+
+margin_percent_table AS (
+  SELECT
+    orders_id,
+    products_id,
+    turnover,
+    margin,
+    ROUND(SAFE_DIVIDE(margin, turnover), 2) AS margin_percent
+  FROM margin_table
+)
+
+SELECT
+  orders_id,
+  products_id,
+  turnover,
+  margin,
+  margin_percent,
+  CASE
+    WHEN margin_percent < 0.05                THEN 'low'
+    WHEN margin_percent > 0.40                THEN 'high'
+    WHEN margin_percent BETWEEN 0.05 AND 0.40 THEN 'medium'
+    ELSE NULL
+  END AS margin_level
+FROM margin_percent_table;
+
+
+-- ============================================================
+-- STEP 7: PROMOTION ANALYSIS
+-- ============================================================
+
+-- Classify promotion type using both name-based matching and
+-- discount percentage thresholds.
+-- Uses chained CTEs: Step 1 calculates discount amount, Step 2
+-- calculates discount percentage, Step 3 assigns promo_type.
+--
+-- Important business logic:
+-- DLC  = Date Limite de Consommation (expiry date)
+-- DLUO = Durée Limite d'Utilisation Optimale (best before date)
+-- These products are marked down due to stock constraints,
+-- not as part of a strategic promotion. They are categorized
+-- as "Short-lived" regardless of their discount rate.
+--
+-- UPPER() + LIKE: case-insensitive text matching to catch all
+-- variations of "dlc" / "DLC" / "Dlc" in promo names.
+WITH promo_table AS (
+  SELECT
+    orders_id,
+    products_id,
+    turnover,
+    promo_name,
+    turnover_before_promo - turnover AS promo
+  FROM course17.gwz_sales_17
+),
+
+promo_percent_table AS (
+  SELECT
+    orders_id,
+    products_id,
+    turnover,
+    promo_name,
+    promo,
+    ROUND(SAFE_DIVIDE(promo, turnover), 2) AS promo_percent
+  FROM promo_table
+)
+
+SELECT
+  orders_id,
+  products_id,
+  turnover,
+  promo_name,
+  promo,
+  promo_percent,
+  CASE
+    WHEN UPPER(promo_name) LIKE '%DLC%'
+      OR UPPER(promo_name) LIKE '%DLUO%' THEN 'Short-lived'
+    WHEN promo_percent >= 0.30            THEN 'High promotion'
+    WHEN promo_percent < 0.10             THEN 'Low promotion'
+    WHEN promo_percent >= 0.10
+     AND promo_percent < 0.30             THEN 'Medium promotion'
+    ELSE NULL
+  END AS promo_type
+FROM promo_percent_table;
