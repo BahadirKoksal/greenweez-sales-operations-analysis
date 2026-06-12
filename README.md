@@ -142,7 +142,4 @@ Discount type was classified using both name-based matching and percentage thres
 
 ---
 
-## 👤 Author
 
-**Bahadır Köksal** — Data Analytics Student @ Workintech  
-[LinkedIn](https://linkedin.com/in/bahadirakif.koksal) · [GitHub](https://github.com/BahadirKoksal)
