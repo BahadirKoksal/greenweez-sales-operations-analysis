@@ -1,5 +1,5 @@
 
-# 🛒 Greenweez Sales Operations Analysis — BigQuery SQL
+# 🛒 Greenweez Sales Operations Analysis, BigQuery SQL
 
 ## 🎯 Objective
 
@@ -15,7 +15,7 @@ Greenweez is a French organic e-commerce company. This project analyzes sales an
 
 ## 📁 Datasets
 
-**Source:** Google BigQuery — `course17` dataset
+
 
 ### `gwz_sales_17` — Raw Sales Data (1,168,081 rows)
 
