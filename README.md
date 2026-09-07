@@ -3,7 +3,7 @@
 
 ## 🎯 Objective
 
-Greenweez is a French organic e-commerce company. This project analyzes sales and operational data from 2021 to measure true profitability beyond just revenue — combining product margins, shipping costs, operational expenses, and ad spend into a unified view.
+Greenweez is a French organic e-commerce company. This project analyzes sales and operational data from 2021 to measure true profitability beyond just revenue, combining product margins, shipping costs, operational expenses, and ad spend into a unified view.
 
 **Key Research Questions:**
 - What is the true operational profit per order after all costs are accounted for?
